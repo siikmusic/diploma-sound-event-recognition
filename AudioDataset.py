@@ -8,12 +8,13 @@ import pandas as pd
 import librosa
 import tensorflow as tf
 from matplotlib import pyplot as plt
-from sklearn.model_selection import train_test_split, KFold,StratifiedKFold
+from sklearn.model_selection import train_test_split, KFold, StratifiedKFold
 
 import Augumentations
 from audio_globals import n_mels, slice_lenght, overlap, n_mfcc, n_fft, hop_length
 from librosa.feature import melspectrogram
 import matplotlib.colors as colors
+
 
 def wait_for_file(filepath, timeout=10, check_interval=0.5):
     """
@@ -73,6 +74,7 @@ def is_file_accessible(filepath, mode='r'):
     except IOError:
         return False
 
+
 class AudioDataset:
 
     def __init__(self, csv_file, save_dir, sr=22050, feature_type='melspectogram', augumentations=None):
@@ -108,7 +110,7 @@ class AudioDataset:
         for index, row in self.df.iterrows():
             self.label_one_hot_class[row['label']] = row['category']
 
-    def preprocess_data(self):
+    def preprocess_train_data(self):
 
         def clear_directory(directory):
             if os.path.exists(directory):
@@ -296,7 +298,7 @@ class AudioDataset:
 
     def get_spectrogram_shape(self):
         sample_spectrogram, _ = self._load_spectrogram(self.train_files[1])
-        for i in range (100):
+        for i in range(100):
             test_spectrogram, _ = self._load_spectrogram(self.train_files[i])
             if test_spectrogram.shape != sample_spectrogram.shape:
                 raise ValueError("Spectrogram has wrong shapes")
@@ -319,7 +321,7 @@ class AudioDataset:
         fold_results = []
         X = self.df['path']
         y = self.df['label']
-        for fold, (train_idx, val_idx) in enumerate(kf.split(X,y)):
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X, y)):
             print(f"Processing fold {fold + 1}/{k}")
             model = model_func(self.num_classes, self.get_spectrogram_shape(), opt)
             train_df = self.df.iloc[train_idx]
@@ -354,7 +356,7 @@ class AudioDataset:
     def _clear_and_process_data(self, df, save_dir, is_test=False):
         self._clear_directory(save_dir)
         self._process_and_save(df, save_dir, is_test=is_test)
-        print("Processed: "+save_dir)
+        print("Processed: " + save_dir)
 
     def _clear_directory(self, directory):
         if os.path.exists(directory):
