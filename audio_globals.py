@@ -1,4 +1,4 @@
-n_mels = 64
+n_mels = 128
 slice_lenght = 30000
 overlap = 50
 n_mfcc = 13

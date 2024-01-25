@@ -99,6 +99,7 @@ class AudioDataset:
         self.test_files = [os.path.join(self.save_dir_test, f) for f in os.listdir(self.save_dir_test)]
         self.val_files = [os.path.join(self.save_dir_val, f) for f in os.listdir(self.save_dir_val)]
         self._load_csv()
+        # TODO: labels from meta
         self.unique_labels = extract_labels_from_filenames(self.save_dir_train)
         self.label_mapping = {original_label: new_label for new_label, original_label in enumerate(self.unique_labels)}
         self.feature_type = feature_type
@@ -148,6 +149,23 @@ class AudioDataset:
         self.val_dataset = self.create_dataset(self.val_files, batch_size)
         return self.train_dataset, self.val_dataset, self.test_dataset
 
+    def process_test(self, file_path):
+        wav, _ = librosa.load(file_path, sr=self.sr)
+        overlap_amount = slice_lenght * (overlap / 100)
+        step_size = slice_lenght - overlap_amount
+        num_slices = int(max(1, 1 + (len(wav) - slice_lenght) // step_size))
+
+        for slice_num in range(num_slices):
+            start = int(slice_num * step_size)
+            end = int(start + slice_lenght)
+            wav_slice = wav[start:end]
+            if len(wav_slice) < slice_lenght:
+                wav_slice = np.pad(wav_slice, (0, slice_lenght - len(wav_slice)), mode='constant')
+            feature = self._extract_feature(wav_slice, self.sr)
+            feature = librosa.util.normalize(feature)
+            file_name = f'{file_path.split(".")[0]}_{os.path.basename(file_path).split(".")[0]}_{slice_num}.npy'
+            np.save(file_name, feature)
+
     def _process_and_save(self, df, save_dir, is_test=False):
         for _, row in df.iterrows():
             file_path = row['path']
@@ -183,13 +201,13 @@ class AudioDataset:
                     np.save(os.path.join(save_dir, file_name), feature)
 
     def get_random_audio_and_feature(self):
-        random_row = self.df.sample().iloc[0]
+        random_row = self.df.iloc[0]
 
-        y, sr = librosa.load(random_row['path'], sr=None)
+        y, sr = librosa.load("siren.wav", sr=None)
 
         feature = self._extract_feature(y, sr)
-        audio_class = random_row['category']
-        return y, feature, audio_class, random_row['path']
+        audio_class = 'siren'
+        return y, feature, audio_class, "siren.wav"
 
     def visualize_random_spectrogram_audio_augumented(self, augumentation=Augumentations.PITCH_SHIFT):
         y, spectrogram, audio_class, path = self.get_random_audio_and_feature()
@@ -200,18 +218,9 @@ class AudioDataset:
         return y, y_aug
 
     def visualize_spectrogram_audio(self, spectrogram, y, audio_class, x_axis="time", cmap="plasma"):
-        """
-        Visualize a spectrogram.
 
-        Parameters:
-        spectrogram (numpy.ndarray): The spectrogram to visualize.
-        sr (int): The sample rate of the audio.
-        hop_length (int): Hop length used in the spectrogram.
-        y_axis (str): Type of y-axis to display. Defaults to "mel".
-        x_axis (str): Type of x-axis to display. Defaults to "time".
-        cmap (str): Colormap to use. Defaults to "viridis".
-        """
         plt.figure(figsize=(15, 6))
+        Time = np.linspace(0, len(y) / self.sr, num=len(y))
 
         # Waveform plot
         plt.subplot(2, 1, 1)
@@ -219,7 +228,7 @@ class AudioDataset:
         plt.xlabel('Time (seconds)')
         plt.ylabel('Amplitude')
         plt.title("Waveform of class: " + audio_class)
-        plt.plot(y)
+        plt.plot(Time, y)
 
         plt.subplot(2, 1, 2)
         if self.feature_type == 'melspectogram':
@@ -227,7 +236,7 @@ class AudioDataset:
         elif self.feature_type == 'spectrogram':
             y_axis_type = "log"
         elif self.feature_type == 'mfcc':
-            y_axis_type = "none"  # MFCCs don't have a meaningful y-axis for frequency
+            y_axis_type = "none"
         else:
             raise ValueError("Unsupported feature type. Choose 'mel', 'spectrogram', or 'mfcc'.", self.feature_type)
         # Set the minimum dB level for black color
@@ -235,11 +244,33 @@ class AudioDataset:
 
         # Create a Normalize object with vmin set to -80 dB
         norm = colors.Normalize(vmin=vmin, vmax=np.max(spectrogram))
-
-        librosa.display.specshow(spectrogram, sr=self.sr, hop_length=hop_length, x_axis=x_axis, y_axis=y_axis_type,
-                                 cmap=cmap, norm=norm)
+        if self.feature_type == 'mfcc':
+            librosa.display.specshow(spectrogram)
+        else:
+            librosa.display.specshow(spectrogram, sr=self.sr, hop_length=hop_length, x_axis=x_axis, y_axis=y_axis_type,
+                                     cmap=cmap, norm=norm)
         plt.colorbar(format='%+2.0f dB')
         plt.title('Spectrogram of class: ' + audio_class)
+        plt.tight_layout()
+        plt.show()
+
+    def visualize_spectrogram_melspectrogram(self, spectrogram, y, audio_class, x_axis="time", cmap="plasma"):
+
+        mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=self.sr)
+        mel_spectrogram_db = librosa.power_to_db(mel_spectrogram, ref=np.max)
+
+        spectrogram = librosa.stft(y)
+        spectrogram_db = librosa.amplitude_to_db(np.abs(spectrogram), ref=np.max)
+
+
+        fig, ax = plt.subplots(2, 1, figsize=(10, 8))
+
+        librosa.display.specshow(mel_spectrogram_db, sr=self.sr, x_axis='time', y_axis='mel', ax=ax[0])
+        ax[1].set_title('Mel Spectrogram of class:' + audio_class)
+
+        librosa.display.specshow(spectrogram_db, sr=self.sr, x_axis='time', y_axis='log', ax=ax[1])
+        ax[0].set_title('Regular Spectrogram of class:' + audio_class)
+
         plt.tight_layout()
         plt.show()
 
@@ -275,10 +306,10 @@ class AudioDataset:
     def _extract_feature(self, y, sr):
         if self.feature_type == 'melspectogram':
             S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels, n_fft=n_fft, hop_length=hop_length)
-            return librosa.power_to_db(S, ref=np.max)
+            return librosa.power_to_db(S)
         elif self.feature_type == 'spectrogram':
             S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop_length)) ** 2
-            return librosa.power_to_db(S, ref=np.max)
+            return librosa.power_to_db(S)
         elif self.feature_type == 'mfcc':
             return librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc, n_fft=n_fft, hop_length=hop_length)
         else:
@@ -310,11 +341,15 @@ class AudioDataset:
 
         original_label = int(os.path.basename(file_path).split('_')[0])
         mapped_label = map_labels(original_label, self.label_mapping)
-        if np.isinf(spectrogram).any() or np.isnan(spectrogram).any():
-            raise ValueError("Spectrogram contains inf or NaN values after normalization")
 
         label_one_hot = tf.keras.utils.to_categorical(mapped_label, num_classes=self.num_classes)
         return spectrogram, label_one_hot
+
+    def load_spectrogram_test(self, file_path):
+        spectrogram = np.load(file_path)
+        spectrogram = np.expand_dims(spectrogram, axis=-1)
+
+        return spectrogram
 
     def k_fold_cross_validation(self, k, batch_size, epochs, callbacks, model_func, opt):
         kf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
@@ -323,14 +358,13 @@ class AudioDataset:
         y = self.df['label']
         for fold, (train_idx, val_idx) in enumerate(kf.split(X, y)):
             print(f"Processing fold {fold + 1}/{k}")
-            model = model_func(self.num_classes, self.get_spectrogram_shape(), opt)
             train_df = self.df.iloc[train_idx]
             val_df = self.df.iloc[val_idx]
 
             # Clear and process the data for the current fold
             self._clear_and_process_data(train_df, self.save_dir_train)
             self._clear_and_process_data(val_df, self.save_dir_val, is_test=True)
-            time.sleep(60)
+            time.sleep(70)
             # Prepare datasets
             self.train_files = [os.path.join(self.save_dir_train, f) for f in os.listdir(self.save_dir_train)]
             self.val_files = [os.path.join(self.save_dir_val, f) for f in os.listdir(self.save_dir_val)]
@@ -340,6 +374,7 @@ class AudioDataset:
                                   enumerate(self.unique_labels)}
             train_dataset = self.create_dataset(self.train_files, batch_size)
             val_dataset = self.create_dataset(self.val_files, batch_size)
+            model = model_func(self.num_classes, self.get_spectrogram_shape(), opt)
 
             model.fit(train_dataset,
                       epochs=epochs,
@@ -348,7 +383,7 @@ class AudioDataset:
                       batch_size=batch_size,
                       callbacks=callbacks)
             test_loss, test_accuracy = model.evaluate(val_dataset)
-            fold_results.append(test_accuracy)
+            fold_results.append((test_accuracy,test_loss))
             print(f"Finished processing fold {fold + 1}/{k}")
 
         return fold_results
