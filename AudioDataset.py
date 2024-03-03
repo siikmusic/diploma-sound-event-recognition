@@ -8,13 +8,17 @@ import pandas as pd
 import librosa
 import tensorflow as tf
 from matplotlib import pyplot as plt
+from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split, KFold, StratifiedKFold
+from sklearn.preprocessing import MinMaxScaler
 
 import Augumentations
 from audio_globals import n_mels, slice_lenght, overlap, n_mfcc, n_fft, hop_length
 from librosa.feature import melspectrogram
 import matplotlib.colors as colors
-
+from augumentations.CyclicShiftAugmentation import cyclic_shift_augmentation
+import seaborn as sns
+import cv2
 
 def wait_for_file(filepath, timeout=10, check_interval=0.5):
     """
@@ -77,7 +81,7 @@ def is_file_accessible(filepath, mode='r'):
 
 class AudioDataset:
 
-    def __init__(self, csv_file, save_dir, sr=22050, feature_type='melspectogram', augumentations=None):
+    def __init__(self, csv_file, save_dir, sr=44100, feature_type='melspectogram', augumentations=None, interpolate=False, interpolation=cv2.INTER_LINEAR):
         if augumentations is None:
             augumentations = ['original']
         else:
@@ -103,45 +107,27 @@ class AudioDataset:
         self.unique_labels = extract_labels_from_filenames(self.save_dir_train)
         self.label_mapping = {original_label: new_label for new_label, original_label in enumerate(self.unique_labels)}
         self.feature_type = feature_type
+        self.interpolate=interpolate
+        self.interpolation = interpolation
 
     def _load_csv(self):
-        self.df = pd.read_csv(self.csv_file)
-        self.num_classes = self.df['label'].nunique()
+        # Load the entire CSV file
+        full_df = pd.read_csv(self.csv_file)
 
+        # Identify 8 unique classes - this assumes 'label' contains numerical class identifiers
+        unique_classes = ["chainsaw","clock_tick","crackling_fire","crying_baby","dog","helicopter","rooster","rain","sneezing","sea_waves"]
+
+        # Filter the DataFrame to only include rows with those 8 classes
+        self.df = full_df[full_df['category'].isin(unique_classes)]
+        # Update the number of classes
+        self.num_classes = len(unique_classes)
+
+        # Initialize or clear the dictionary (assuming it exists)
+        self.label_one_hot_class = {}
+
+        # Map labels to categories for the 8 classes
         for index, row in self.df.iterrows():
             self.label_one_hot_class[row['label']] = row['category']
-
-    def preprocess_train_data(self):
-
-        def clear_directory(directory):
-            if os.path.exists(directory):
-                for filename in os.listdir(directory):
-                    file_path = os.path.join(directory, filename)
-                    try:
-                        if os.path.isfile(file_path) or os.path.islink(file_path):
-                            os.unlink(file_path)
-                        elif os.path.isdir(file_path):
-                            shutil.rmtree(file_path)
-                    except Exception as e:
-                        print(f'Failed to delete {file_path}. Reason: {e}')
-            else:
-                os.makedirs(directory)
-
-        clear_directory(self.save_dir_train)
-        clear_directory(self.save_dir_val)
-        clear_directory(self.save_dir_test)
-        train_df, test_df = train_test_split(self.df, test_size=0.2, stratify=self.df['label'])
-        train_df, val_df = train_test_split(train_df, test_size=0.25, stratify=train_df['label'])
-
-        self._process_and_save(train_df, self.save_dir_train)
-        print("Train features extracted")
-        self._process_and_save(val_df, self.save_dir_val, is_test=True)
-        print("Val features extracted")
-        self._process_and_save(test_df, self.save_dir_test, is_test=True)
-        print("Test features extracted")
-        self.train_files = [os.path.join(self.save_dir_train, f) for f in os.listdir(self.save_dir_train)]
-        self.test_files = [os.path.join(self.save_dir_test, f) for f in os.listdir(self.save_dir_test)]
-        self.val_files = [os.path.join(self.save_dir_val, f) for f in os.listdir(self.save_dir_val)]
 
     def get_datasets(self, batch_size=32):
         self.train_dataset = self.create_dataset(self.train_files, batch_size)
@@ -149,53 +135,34 @@ class AudioDataset:
         self.val_dataset = self.create_dataset(self.val_files, batch_size)
         return self.train_dataset, self.val_dataset, self.test_dataset
 
-    def process_test(self, file_path):
-        wav, _ = librosa.load(file_path, sr=self.sr)
-        overlap_amount = slice_lenght * (overlap / 100)
-        step_size = slice_lenght - overlap_amount
-        num_slices = int(max(1, 1 + (len(wav) - slice_lenght) // step_size))
-
-        for slice_num in range(num_slices):
-            start = int(slice_num * step_size)
-            end = int(start + slice_lenght)
-            wav_slice = wav[start:end]
-            if len(wav_slice) < slice_lenght:
-                wav_slice = np.pad(wav_slice, (0, slice_lenght - len(wav_slice)), mode='constant')
-            feature = self._extract_feature(wav_slice, self.sr)
-            feature = librosa.util.normalize(feature)
-            file_name = f'{file_path.split(".")[0]}_{os.path.basename(file_path).split(".")[0]}_{slice_num}.npy'
-            np.save(file_name, feature)
-
     def _process_and_save(self, df, save_dir, is_test=False):
+        slice_length_samples = int(slice_lenght * self.sr)
+        overlap_feature = overlap
+        if self.feature_type == 'spectrogram':
+            overlap_feature=0.75
+        overlap_amount = slice_length_samples * (overlap_feature / 100)
+        step_size = slice_length_samples - overlap_amount
+
         for _, row in df.iterrows():
             file_path = row['path']
             label = row['label']
             wav, _ = librosa.load(file_path, sr=self.sr)
             wav = peak_normalize(wav)
-            wav = remove_silence(wav)
 
-            overlap_amount = slice_lenght * (overlap / 100)
-            step_size = slice_lenght - overlap_amount
-            num_slices = int(max(1, 1 + (len(wav) - slice_lenght) // step_size))
+            augmentations = self.augumentations if not is_test else ['original']
+            for aug in augmentations:
+                augmented_wav = self.apply_augmentation(wav, aug)
 
-            augmentations = self.augumentations if not is_test else [
-                'original']
-            for slice_num in range(num_slices):
-                start = int(slice_num * step_size)
-                end = int(start + slice_lenght)
-                wav_slice = wav[start:end]
+                num_slices = int(max(1, 1 + (len(augmented_wav) - slice_length_samples) // step_size))
+                for slice_num in range(num_slices):
+                    start = int(slice_num * step_size)
+                    end = int(start + slice_length_samples)
+                    wav_slice = augmented_wav[start:end]
 
-                if len(wav_slice) < slice_lenght:
-                    wav_slice = np.pad(wav_slice, (0, slice_lenght - len(wav_slice)), mode='constant')
+                    if len(wav_slice) < slice_length_samples:
+                        wav_slice = np.pad(wav_slice, (0, slice_length_samples - len(wav_slice)), mode='constant')
 
-                for aug in augmentations:
-                    augmented_slice = self.apply_augmentation(wav_slice, aug)
-                    augmented_slice = augmented_slice[:slice_lenght]
-                    if len(augmented_slice) < slice_lenght:
-                        shortfall = slice_lenght - len(augmented_slice)
-                        augmented_slice = np.pad(augmented_slice, (0, shortfall), mode='constant')
-
-                    feature = self._extract_feature(augmented_slice, self.sr)
+                    feature = self._extract_feature(wav_slice, self.sr)
                     feature = librosa.util.normalize(feature)
                     file_name = f'{label}_{os.path.basename(file_path).split(".")[0]}_{slice_num}_{aug}.npy'
                     np.save(os.path.join(save_dir, file_name), feature)
@@ -262,7 +229,6 @@ class AudioDataset:
         spectrogram = librosa.stft(y)
         spectrogram_db = librosa.amplitude_to_db(np.abs(spectrogram), ref=np.max)
 
-
         fig, ax = plt.subplots(2, 1, figsize=(10, 8))
 
         librosa.display.specshow(mel_spectrogram_db, sr=self.sr, x_axis='time', y_axis='mel', ax=ax[0])
@@ -305,13 +271,13 @@ class AudioDataset:
 
     def _extract_feature(self, y, sr):
         if self.feature_type == 'melspectogram':
-            S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels, n_fft=n_fft, hop_length=hop_length)
+            S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=64, n_fft=4096, hop_length=2048,fmin=300, fmax=15000)
             return librosa.power_to_db(S)
         elif self.feature_type == 'spectrogram':
-            S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop_length)) ** 2
-            return librosa.power_to_db(S)
+            S = np.abs(librosa.stft(y, n_fft=2048, hop_length=1024, fmin = 100,fmax=17500)) ** 2
+            return S
         elif self.feature_type == 'mfcc':
-            return librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc, n_fft=n_fft, hop_length=hop_length)
+            return librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         else:
             raise ValueError("Unsupported feature type")
 
@@ -325,31 +291,54 @@ class AudioDataset:
         elif aug == 'noise_addition':
             noise_level = np.random.uniform(0.001, 0.01)  # Noise level
             wav_slice = wav_slice + noise_level * np.random.randn(len(wav_slice))
+        elif aug == Augumentations.CYCLIC_SHIFT_1:
+            wav_slice = cyclic_shift_augmentation(wav_slice, self.sr, frame_length=n_fft, hop_length=hop_length,
+                                                  energy_threshold=0.0005,
+                                                  shift=int(Augumentations.CYCLIC_SHIFT_1.split("_")[-1]))
+        elif aug == Augumentations.CYCLIC_SHIFT_2:
+            wav_slice = cyclic_shift_augmentation(wav_slice, self.sr, frame_length=n_fft, hop_length=hop_length,
+                                                  energy_threshold=0.0005,
+                                                  shift=int(Augumentations.CYCLIC_SHIFT_2.split("_")[-1]))
+        elif aug == Augumentations.CYCLIC_SHIFT_3:
+            wav_slice = cyclic_shift_augmentation(wav_slice, self.sr, frame_length=n_fft, hop_length=hop_length,
+                                                  energy_threshold=0.0005,
+                                                  shift=int(Augumentations.CYCLIC_SHIFT_3.split("_")[-1]))
         return wav_slice
 
     def get_spectrogram_shape(self):
-        sample_spectrogram, _ = self._load_spectrogram(self.train_files[1])
-        for i in range(100):
-            test_spectrogram, _ = self._load_spectrogram(self.train_files[i])
-            if test_spectrogram.shape != sample_spectrogram.shape:
-                raise ValueError("Spectrogram has wrong shapes")
-        return sample_spectrogram.shape
+        file_path = self.df['path'].iloc[0]
+        wav, _ = librosa.load(file_path, sr=self.sr)
 
+        wav_slice = wav[0:int(slice_lenght * self.sr)]
+        feature = self._extract_feature(wav_slice, self.sr)
+        feature = librosa.util.normalize(feature)
+        feature = np.expand_dims(feature, axis=-1)
+        if self.interpolate:
+            feature = self.interpolate_image(feature)
+        # Next, repeat the data across this new dimension to get a shape of (128, 130, 3)
+        feature = np.repeat(feature, 3, axis=-1)
+        return feature.shape
+    def interpolate_image(self,image, output_shape=(224, 224)):
+        return cv2.resize(image, output_shape, interpolation=self.interpolation)
     def _load_spectrogram(self, file_path):
+        # Load the original spectrogram
         spectrogram = np.load(file_path)
         spectrogram = np.expand_dims(spectrogram, axis=-1)
+        min_max = MinMaxScaler((0, 1))
+        min_max.fit(spectrogram)
+        spectrogram = min_max.transform(spectrogram)
+        # Next, repeat the data across this new dimension to get a shape of (128, 130, 3)
+        spectrogram = np.repeat(spectrogram, 3, axis=-1)
 
+        # Extract the original label from the file name and map it
         original_label = int(os.path.basename(file_path).split('_')[0])
         mapped_label = map_labels(original_label, self.label_mapping)
-
+        if self.interpolate:
+            spectrogram = self.interpolate_image(spectrogram)
+        # Convert the mapped label into a one-hot encoded vector
         label_one_hot = tf.keras.utils.to_categorical(mapped_label, num_classes=self.num_classes)
+
         return spectrogram, label_one_hot
-
-    def load_spectrogram_test(self, file_path):
-        spectrogram = np.load(file_path)
-        spectrogram = np.expand_dims(spectrogram, axis=-1)
-
-        return spectrogram
 
     def k_fold_cross_validation(self, k, batch_size, epochs, callbacks, model_func, opt):
         kf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
@@ -374,7 +363,7 @@ class AudioDataset:
                                   enumerate(self.unique_labels)}
             train_dataset = self.create_dataset(self.train_files, batch_size)
             val_dataset = self.create_dataset(self.val_files, batch_size)
-            model = model_func(self.num_classes, self.get_spectrogram_shape(), opt)
+            model = model_func(opt)
 
             model.fit(train_dataset,
                       epochs=epochs,
@@ -383,7 +372,48 @@ class AudioDataset:
                       batch_size=batch_size,
                       callbacks=callbacks)
             test_loss, test_accuracy = model.evaluate(val_dataset)
-            fold_results.append((test_accuracy,test_loss))
+            # Generate predictions for the validation dataset
+            y_true = []
+            y_pred = []
+
+            for features, labels in val_dataset:
+                # Generate predictions
+                predictions = model.predict(features)
+
+                # Convert one-hot encoded labels to class labels
+                labels = np.argmax(labels, axis=1)
+
+                # Convert predictions to class labels
+                predicted_labels = np.argmax(predictions, axis=1)
+
+                # Store true and predicted labels
+                y_true.append(labels)
+                y_pred.append(predicted_labels)
+
+            # Concatenate results from all batches
+            y_true = np.concatenate(y_true)
+            y_pred = np.concatenate(y_pred)
+
+            label_one_hot_class_test = {}
+
+            for label, values in self.label_mapping.items():
+                label_one_hot_class_test[values] = self.label_one_hot_class[label]
+
+            y_true_labels = [label_one_hot_class_test[idx] for idx in y_true]
+            y_pred_labels = [label_one_hot_class_test[idx] for idx in y_pred]
+
+            cm = confusion_matrix(y_true_labels, y_pred_labels, labels=list(label_one_hot_class_test.values()))
+
+            # Optionally, plot the confusion matrix using seaborn
+            plt.figure(figsize=(10, 8))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=label_one_hot_class_test.values(),
+                        yticklabels=label_one_hot_class_test.values())
+            plt.xlabel('Predicted Labels')
+            plt.ylabel('True Labels')
+            plt.title(f'Confusion Matrix for Fold {fold + 1}')
+            plt.show()
+
+            fold_results.append((test_accuracy, test_loss, model, cm))
             print(f"Finished processing fold {fold + 1}/{k}")
 
         return fold_results
