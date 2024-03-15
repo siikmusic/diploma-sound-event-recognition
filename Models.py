@@ -1,9 +1,10 @@
 import tensorflow as tf
-from keras.layers import Lambda, Dropout
+from keras.layers import Lambda, Dropout, BatchNormalization
 from keras.models import Model
 from keras.layers import Dense, Flatten, Input
-from keras.applications import VGG16, ResNet50V2,DenseNet121
+from keras.applications import VGG16, ResNet50V2,MobileNetV3Large, DenseNet121, InceptionV3
 import keras.backend as K
+from keras.regularizers import l2
 
 VGG="VGG"
 RESNET="RESNET"
@@ -31,8 +32,11 @@ class Models:
             layer.trainable = False
         x = base_model(inputs)
         x = Flatten()(x)
-        x = Dense(512, activation='relu')(x)
+        x = Dense(128, activation='relu', kernel_regularizer=l2(0.01))(x)
+        x = BatchNormalization()(x)
         x = Dropout(0.5)(x)
+        x = Dense(128, activation='relu', kernel_regularizer=l2(0.01))(x)
+        x = BatchNormalization()(x)
         predictions = Dense(self.num_classes, activation='softmax')(x)
 
         model = Model(inputs=inputs, outputs=predictions)
@@ -49,8 +53,11 @@ class Models:
             layer.trainable = False
         x = base_model(inputs)
         x = Flatten()(x)
-        x = Dense(512, activation='relu')(x)
+        x = Dense(128, activation='relu', kernel_regularizer=l2(0.01))(x)
+        x = BatchNormalization()(x)
         x = Dropout(0.5)(x)
+        x = Dense(128, activation='relu', kernel_regularizer=l2(0.01))(x)
+        x = BatchNormalization()(x)
         predictions = Dense(self.num_classes, activation='softmax')(x)
 
         model = Model(inputs=inputs, outputs=predictions)
@@ -60,15 +67,17 @@ class Models:
     def create_DenseNet121_model(self, opt):
         inputs = Input(shape=self.input_shape)
 
-        base_model = DenseNet121(weights='imagenet', include_top=False, input_shape=self.input_shape, pooling="max")
-
+        base_model = InceptionV3(weights='imagenet', include_top=False, input_shape=self.input_shape, pooling="max")
         # Freeze the layers of the base model
         for layer in base_model.layers:
             layer.trainable = False
         x = base_model(inputs)
         x = Flatten()(x)
-        x = Dense(512, activation='relu')(x)
+        x = Dense(128, activation='relu', kernel_regularizer=l2(0.01))(x)
+        x = BatchNormalization()(x)
         x = Dropout(0.5)(x)
+        x = Dense(128, activation='relu', kernel_regularizer=l2(0.01))(x)
+        x = BatchNormalization()(x)
         predictions = Dense(self.num_classes, activation='softmax')(x)
 
         model = Model(inputs=inputs, outputs=predictions)
