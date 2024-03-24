@@ -1,7 +1,6 @@
 import pandas as pd
 
 if __name__ == "__main__":
-    print("soi")
     csv = pd.read_csv("ESC-50-master/meta/esc50.csv")
     df = pd.DataFrame(columns=['label', 'path'])
     df['label']=csv['target']

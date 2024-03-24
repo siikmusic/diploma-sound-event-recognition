@@ -2,7 +2,6 @@ import os
 import random
 import shutil
 import time
-
 import cv2
 import numpy as np
 import pandas as pd
@@ -14,7 +13,7 @@ from matplotlib import pyplot as plt
 from numpy.fft import fft2, fftshift, ifftshift, ifft2
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split, KFold, StratifiedKFold
-
+from keras.applications.inception_v3 import preprocess_input
 import Augumentations
 import Models
 from audio_globals import n_mels, slice_lenght, overlap, n_mfcc, n_fft, hop_length
@@ -462,6 +461,8 @@ class AudioDataset:
             return self.zero_padding_spectrogram(image,output_shape)
         if self.interpolation == "GONIOMETRIC":
             return self.resize_image_with_fourier(image,output_shape)
+        if self.model_name == Models.DENSNET:
+            output_shape = (299, 299)
         return cv2.resize(image, output_shape, interpolation=self.interpolation)
 
     def _load_spectrogram(self, file_path):
@@ -496,7 +497,7 @@ class AudioDataset:
             self._clear_and_process_data(train_df, self.save_dir_train)
             self._clear_and_process_data(val_df, self.save_dir_val, is_test=True)  # Now is_test is False for val data
             self._clear_and_process_data(test_df, self.save_dir_test, is_test=True)
-            time.sleep(70)  # Assuming this is necessary for some file system operations to complete
+            time.sleep(150)  # Assuming this is necessary for some file system operations to complete
 
             # Prepare datasets
             train_files = [os.path.join(self.save_dir_train, f) for f in os.listdir(self.save_dir_train)]
@@ -536,7 +537,7 @@ class AudioDataset:
                               metrics=['accuracy'])
 
                 history_fine=model.fit(train_dataset,
-                          epochs=fine_tune_epochs,
+                          epochs=40,
                           verbose=1,
                           validation_data=val_dataset,
                           batch_size=batch_size,
@@ -588,7 +589,7 @@ class AudioDataset:
             plt.title(f'Confusion Matrix for Fold {fold + 1}')
             plt.show()
 
-            fold_results.append((test_accuracy, test_loss, model, cm,training_time))
+            fold_results.append((test_accuracy, test_loss, combine_histories(history,history_fine), cm,training_time))
             print(f"Finished processing fold {fold + 1}/{k}")
 
         return fold_results
